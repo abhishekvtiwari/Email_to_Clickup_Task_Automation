@@ -1,0 +1,5 @@
+pandas==1.2.4
+smtplib==0.1.0
+PyYAML==5.4.1
+imaplib==0.4.0
+GitPython==3.1.14
