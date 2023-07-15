@@ -1,18 +1,21 @@
 import pandas as pd
-from github import Github
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import yaml
 import re
 import imaplib
 import email
 import datetime
+from git import Repo
 
 
 class GmailMailer:
-    def __init__(self, credentials_file_path, mail_send_list_file_path, repo_name, filtered_email_data_file,
+    def __init__(self, credentials_file_path, mail_send_list_file_path, repo_url, filtered_email_data_file,
                  matched_email_data_file, original_email_data_file, sent_email_data_file):
         self.credentials_file_path = credentials_file_path
         self.mail_send_list_file_path = mail_send_list_file_path
-        self.repo_name = repo_name
+        self.repo_url = repo_url
         self.filtered_email_data_file = filtered_email_data_file
         self.matched_email_data_file = matched_email_data_file
         self.original_email_data_file = original_email_data_file
@@ -21,32 +24,22 @@ class GmailMailer:
         self.password = None
 
     def load_credentials(self):
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        contents = repo.get_contents(self.credentials_file_path)
-        content = contents.decoded_content.decode('utf-8')
+        with open(self.credentials_file_path) as f:
+            content = f.read()
         my_credentials = yaml.load(content, Loader=yaml.FullLoader)
         self.user = my_credentials["user"]
         self.password = my_credentials["password"]
 
     def send_emails(self):
         # Load filtered email data
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        contents = repo.get_contents(self.filtered_email_data_file)
-        filtered_email_data = pd.read_excel(contents.download_url)
-
-        contents = repo.get_contents(self.matched_email_data_file)
-        matched_email_data = pd.read_excel(contents.download_url)
-
-        contents = repo.get_contents(self.original_email_data_file)
-        original_email_data = pd.read_excel(contents.download_url)
+        filtered_email_data = pd.read_excel(self.filtered_email_data_file)
+        matched_email_data = pd.read_excel(self.matched_email_data_file)
+        original_email_data = pd.read_excel(self.original_email_data_file)
 
         # Load sent email data
         try:
-            contents = repo.get_contents(self.sent_email_data_file)
-            sent_email_data = pd.read_excel(contents.download_url)
-        except:
+            sent_email_data = pd.read_excel(self.sent_email_data_file)
+        except FileNotFoundError:
             sent_email_data = pd.DataFrame(
                 columns=['To', 'Subject', 'Body', 'Sent', 'Date received', 'Sent time'])
 
@@ -90,11 +83,18 @@ class GmailMailer:
         # Concatenate new emails with existing sent email data
         sent_email_data = pd.concat([sent_email_data, pd.DataFrame(new_emails)], ignore_index=True)
 
-        # Save sent email data to GitHub repository
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        contents = repo.get_contents(self.sent_email_data_file)
-        repo.update_file(contents.path, "Update sent email data", sent_email_data.to_excel, branch="main")
+        # Save sent email data to the Git repository
+        repo = Repo.clone_from(self.repo_url, 'temp_repo')
+        repo_path = repo.working_dir
+
+        sent_email_data_file_path = f'{repo_path}/{self.sent_email_data_file}'
+        sent_email_data.to_excel(sent_email_data_file_path, index=False)
+
+        # Commit and push changes
+        repo.git.add(sent_email_data_file_path)
+        repo.index.commit("Update sent email data")
+        origin = repo.remote(name='origin')
+        origin.push()
 
     def run(self):
         self.load_credentials()
@@ -102,16 +102,14 @@ class GmailMailer:
 
 
 class GmailDataExtractor:
-    def __init__(self, credentials_file_path, mail_send_list_file_path, repo_name):
+    def __init__(self, credentials_file_path, mail_send_list_file_path, repo_url):
         self.credentials_file_path = credentials_file_path
         self.mail_send_list_file_path = mail_send_list_file_path
-        self.repo_name = repo_name
+        self.repo_url = repo_url
 
     def load_credentials(self):
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        contents = repo.get_contents(self.credentials_file_path)
-        content = contents.decoded_content.decode('utf-8')
+        with open(self.credentials_file_path) as f:
+            content = f.read()
         my_credentials = yaml.load(content, Loader=yaml.FullLoader)
         self.user = my_credentials["user"]
         self.password = my_credentials["password"]
@@ -154,10 +152,7 @@ class GmailDataExtractor:
         self.filtered_df = df[~df['Subject'].str.startswith('Re:')]
 
     def load_mail_send_list(self):
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        contents = repo.get_contents(self.mail_send_list_file_path)
-        self.mail_send_list = pd.read_csv(contents.download_url)
+        self.mail_send_list = pd.read_csv(self.mail_send_list_file_path)
 
     def match_emails(self):
         matched_df = pd.DataFrame(columns=['Subject', 'From', 'Date', 'Body', 'To_email'])
@@ -186,12 +181,30 @@ class GmailDataExtractor:
 
         self.matched_df = matched_df
 
-    def store_data_to_github(self):
-        g = Github()  # Assuming you have configured PyGithub with your GitHub access token
-        repo = g.get_repo(self.repo_name)
-        repo.create_file(self.filtered_email_data_file, "Store filtered email data", self.filtered_df.to_excel, branch="main")
-        repo.create_file(self.matched_email_data_file, "Store matched email data", self.matched_df.to_excel, branch="main")
-        repo.create_file(self.original_email_data_file, "Store original email data", self.original_df.to_excel, branch="main")
+    def store_data_to_repo(self):
+        repo = Repo.clone_from(self.repo_url, 'temp_repo')
+        repo_path = repo.working_dir
+
+        # Save filtered email data
+        filtered_email_data_file_path = f'{repo_path}/{self.filtered_email_data_file}'
+        self.filtered_df.to_excel(filtered_email_data_file_path, index=False)
+        repo.git.add(filtered_email_data_file_path)
+
+        # Save matched email data
+        matched_email_data_file_path = f'{repo_path}/{self.matched_email_data_file}'
+        self.matched_df.rename(columns={'Email': 'To_email'}, inplace=True)
+        self.matched_df.to_excel(matched_email_data_file_path, index=False)
+        repo.git.add(matched_email_data_file_path)
+
+        # Save original email data
+        original_email_data_file_path = f'{repo_path}/{self.original_email_data_file}'
+        self.original_df.to_excel(original_email_data_file_path, index=False)
+        repo.git.add(original_email_data_file_path)
+
+        # Commit and push changes
+        repo.index.commit("Update email data")
+        origin = repo.remote(name='origin')
+        origin.push()
 
     def disconnect_from_gmail(self):
         self.mail.logout()
@@ -202,24 +215,24 @@ class GmailDataExtractor:
         self.fetch_emails()
         self.load_mail_send_list()
         self.match_emails()
-        self.store_data_to_github()
+        self.store_data_to_repo()
         self.disconnect_from_gmail()
 
 
 # Usage
 if __name__ == "__main__":
-    credentials_file_path = "path/to/credentials.yml"  # Path to credentials file in the GitHub repository
-    mail_send_list_file_path = "path/to/Mail_Send_List.csv"  # Path to mail send list file in the GitHub repository
-    repo_name = "your/repo"  # Replace with your GitHub repository name
+    credentials_file_path = "credentials.yml"  # Path to credentials file in the repository
+    mail_send_list_file_path = "Mail_Send_List.csv"  # Path to mail send list file in the repository
+    repo_url = "https://github.com/username/repo.git"  # Replace with the URL of your Git repository
     filtered_email_data_file = "filtered_email_data.xlsx"
     matched_email_data_file = "matched_email_data.xlsx"
     original_email_data_file = "original_email_data.xlsx"
     sent_email_data_file = "Sent_mail.xlsx"
 
-    extractor = GmailDataExtractor(credentials_file_path, mail_send_list_file_path, repo_name)
+    extractor = GmailDataExtractor(credentials_file_path, mail_send_list_file_path, repo_url)
     extractor.run()
 
-    mailer = GmailMailer(credentials_file_path, mail_send_list_file_path, repo_name, filtered_email_data_file,
+    mailer = GmailMailer(credentials_file_path, mail_send_list_file_path, repo_url, filtered_email_data_file,
                          matched_email_data_file, original_email_data_file, sent_email_data_file)
     mailer.load_credentials()
     mailer.send_emails()
