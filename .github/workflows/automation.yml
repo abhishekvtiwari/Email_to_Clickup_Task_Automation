@@ -1,11 +1,11 @@
-name: Automation
+name: Automated Gmail Data Extraction
 
 on:
   schedule:
     - cron: "0 12-20 * * 1-5"
 
 jobs:
-  run-script:
+  automate:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,18 +15,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
-          python-version: 3.x
+          python-version: 3.9
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install pandas smtplib email tqdm PyYAML
 
-      - name: Run Python script
-        run: python GmailDataExtractor.py
-
-      - name: Commit and push changes
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add .
-          git commit -m "Update data files"
-          git push
+      - name: Run Gmail Data Extraction
+        run: python GmailDataExtractor1.py
+        env:
+          CREDENTIALS_FILE: ${{ secrets.CREDENTIALS_FILE }}
+          MAIL_SEND_LIST_FILE: ${{ secrets.MAIL_SEND_LIST_FILE }}
+          OUTPUT_FOLDER: ${{ secrets.OUTPUT_FOLDER }}
